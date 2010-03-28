@@ -1,0 +1,6 @@
+Ver 0.02, 2010-03-29
+  * Supports both "me too" retweet and old fashioned editable RT
+  * Neater GUI: less in timeline view, more in single status view
+    (thanks to @ThaiFoodBlog for the criticism)
+  * Added relativeDates.py by Jehiah Czebotar http://jehiah.com/
+    (convert time to strings like "23 minutes ago")
