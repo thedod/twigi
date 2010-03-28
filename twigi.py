@@ -1,5 +1,5 @@
 #!/usr/bin/python
-""" Ver 0.01, 2010-03-28
+""" Ver 0.02, 2010-03-29
 Copyleft @TheRealDod, license: http://www.gnu.org/licenses/gpl-3.0.txt
 TwiGI (pronounced twi-gee-eye, but Twiggy's also fine because it's lean)
 was originally written as a CGI script to be run internally by the w3m text browser
@@ -10,67 +10,71 @@ so no use running it on a public internet server and let everyone
 tweet in your name :) ).
 Features:
 * Minimum moving parts. assumes browser's really dumb
-* Old fashioned retweet:
-  * You get to edit the text "RT @theuser blah etc."
-  * It appears as "in reply to"
-  * No JS character count, but if >140, you get to edit it again
-    and the truncated stuff is shown as copy/paste fodder
-  * Enumerates all "modern RT" users of a status (not just "retweeted by 5 people")
+* Supports "me too" retweet and old fashioned editable RT
+* Enumerates all retweeters of a status (not just "retweeted by 5 people")
 * Support for bidi (Arabic, Farsi, Hebrew, etc.)
-* <200 lines of code [so far]
 Dependencies:
 * tweepy (http://gitorious.org/tweepy)
 * pyfribidi (http://pyfribidi.sourceforge.net/ or apt-get python-pyfribidi)
-  [pyfribidi is optional: only if you read bidi languages and your browser+os
+  [pyfribidi is optional: only if you read bidi languages and your os/browser
   doesn't do bidi by itself]
-To do: OAuth, follow/unfollow, search, DM
+To do: OAuth, follow/unfollow/block/spam, search, DM
 """
+
 USE_BIDI=True # brown people indicator :)
+
 import cgitb; cgitb.enable() # for debugging
-from urllib2 import quote
+
 from exceptions import Exception
-class TwigiError(Exception):
-    pass
-def bidi(s): return s
+class TwigiError(Exception): pass
+
+### Bidi
+def bidi(s): return s # fallback: does nothing
 if USE_BIDI:
     try:
-        from pyfribidi import log2vis,LTR # for rtl languages
+        from pyfribidi import log2vis,LTR
         def bidi(s):
             return log2vis(s,base_direction=LTR)
     except ImportError:
         pass
-import tweepy
 # kamikaze auth mode - mystuff.py should look like:
 #     user="..."
 #     password="..."
-# You'd better chmod it to 600
+# You'd better chmod mystuff.py to 600
 # (w3m runs it itself. Not via a server owned by the httpd unix user)
 import mystuff
+import tweepy
 api=tweepy.API(tweepy.auth.BasicAuthHandler(mystuff.user,mystuff.password))
-import re
-menu_ops=['home','mentions']
-def make_menu_entry(op,script_name,link=True):
-    if link:
-        return '[<a href="%s?op=%s">%s</a>]' % (script_name,op,op)
-    else:
-        return '[%s]' % op
+me=api.me()
+
+menu_ops=[
+    ('home','?op=home'),
+    (me.screen_name,'?op=user'),
+    ('@%s' % me.screen_name,'?op=mentions')]
+def make_menu_entry(op,query,script_name):
+    return '[<a href="%s%s">%s</a>]' % (script_name,query,op)
+
 pat_url = r"((http|https)://([-A-Za-z0-9+&@#/%?=~_()|!:,.;]*[-A-Za-z0-9+&@#/%=~_()|]))"
 pat_atuser = r"@([_a-zA-z][_a-zA-z0-9]*)"
 def urlize(text,script_name):
+    import re
     html=re.sub(pat_url,r'<a target="_blank" href="\1">\1</a>',text)
     html=re.sub(pat_atuser,
         r'@<a target="_blank" href="%s?op=user&name=\1">\1</a>' % script_name,
         html)
     html=html.replace('\n','<br/>\n')
     return html
-def dequote(s):
-    return s.replace('"','&quot;')
+
 def reply_url(s,script_name):
-    return "%s?op=home&status=%%40%s%%20&re_id=%s" % (
-        script_name,s.author.screen_name,s.id)
+    return "%s?op=status&id=%s&status=%%40%s%%20&re_id=%s" % (
+        script_name,s.id,s.author.screen_name,s.id)
 def rt_url(s,script_name):
-    return "%s?op=home&status=RT%%20%%40%s%%20%s&re_id=%s" % (
-        script_name,s.author.screen_name,quote(s.text.encode('utf-8')),s.id)
+    return "%s?op=retweet&id=%s" % (script_name,s.id)
+def ert_url(s,script_name):
+    from urllib2 import quote
+    return "%s?op=status&id=%s&status=RT%%20%%40%s%%20%s&re_id=%s" % (
+        script_name,s.id,s.author.screen_name,
+        quote(s.text.encode('utf-8')),s.id)
 def format_user(u,script_name):
     return '<a href="%(script)s?op=user&name=%(name)s">%(name)s</a>' % {
         'script':script_name, 'name':u.screen_name}
@@ -80,20 +84,26 @@ def format_re_link(s,script_name):
     rid=s.in_reply_to_status_id
     if not rid:
         return ''
-    return ' <a href="%s?op=status&id=%d">Re: %s</a>' % (script_name,rid,s.in_reply_to_screen_name)
+    return ' <a href="%s?op=status&id=%d"><b>Re:</b> %s</a>' % (script_name,rid,s.in_reply_to_screen_name)
 def format_status(s,script_name,full=False):
-    res='[<a href="%s">R</a>][<a href="%s">RT</a>]%s %s%s' % (
-        reply_url(s,script_name),
-        rt_url(s,script_name),
+    from relativeDates import getRelativeTime
+    from time import mktime
+    res=not full and format_status_link(s,script_name) or ''
+    res+='%s %s%s <i>%s</i>' % (
         format_user(s.author,script_name),
         urlize(bidi(s.text),script_name),
-        format_re_link(s,script_name))
+        format_re_link(s,script_name),
+        getRelativeTime(mktime(s.created_at.utctimetuple())))
     if full:
         rts=s.retweets()
         if rts:
-           res+='<br/>RTs: ' + ', '.join([format_user(r.author,script_name) for r in rts])
-    else:
-        res+=format_status_link(s,script_name)
+           res+='<p><b>Retweeted by</b>: ' + ', '.join([format_user(r.author,script_name) for r in rts])
+        res+='<p>'
+        if not api.me().id in [r.author.id for r in rts]:
+            res+='[<a href="%s">Retweet</a>]' % rt_url(s,script_name)
+        res+='[<a href="%s">Reply</a>][<a href="%s">Editable RT</a>]' % (
+            reply_url(s,script_name), ert_url(s,script_name))
+        res+='</p>'
     return res
 
 response_template=u"""Content-type: text/html; charset=UTF-8\n
@@ -117,9 +127,10 @@ response_template=u"""Content-type: text/html; charset=UTF-8\n
         </%(listtag)s>
     </body>
 </html>"""
+
 def make_response(script_name='',op='home', title='home', timeline=[],
                     feedback='', status='', re_id=''):
-    menu='\n'.join([make_menu_entry(o,script_name,status or o!=op) for o in menu_ops])
+    menu='\n'.join([make_menu_entry(o[0],o[1],script_name) for o in menu_ops])
     tl='\n'.join(['<li>%s</li>' % format_status(s,script_name,op=='status') for s in timeline])
     return response_template % {
         'script':script_name,
@@ -128,9 +139,10 @@ def make_response(script_name='',op='home', title='home', timeline=[],
         'title':title,
         'menu':menu,
         'feedback':feedback and ('<b>%s</b><br/>' % feedback) or '',
-        'status':dequote(status),
+        'status':status.replace('"','&quot;'), # for value="%(status)s"
         're_id':re_id,
         'timeline':tl}
+
 def main():
     import os,cgi
     try:
@@ -141,7 +153,7 @@ def main():
     feedback=''
     op=form.getvalue('op','home')
     name=form.getvalue('name',api.me().screen_name) # for op=='user'
-    status_id=form.getvalue('id',None) # for op=='status'
+    status_id=form.getvalue('id',None) # for op=='status' and op=='retweet'
     status=unicode(form.getvalue('status',''),'utf-8')
     re_id=form.getvalue('re_id','').strip() or None
     if len(status)>140:
@@ -153,11 +165,17 @@ def main():
     if op=='tweet' and not status:
         feedack="Didn't send an empty tweet"
         op='home'
-    if op=='tweet':
+    if op=='retweet':
+        try:
+            api.get_status(status_id).retweet()
+            print 'Location: %s?op=status&id=%s\n' % (script_name,status_id)
+            return
+        except:
+            feedback="Network error. Didn't retweet."
+            op='status'
+    elif op=='tweet':
         try:
             api.update_status(status,re_id)
-            status=''
-            re_id=''
             print 'Location: %s\n' % script_name
             return
         except:
