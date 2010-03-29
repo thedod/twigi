@@ -22,8 +22,8 @@ To do: OAuth, follow/unfollow/block/spam, search, DM
 """
 
 USE_BIDI=True # brown people indicator :)
+CACHE_DIR='cache'
 
-import cgitb; cgitb.enable() # for debugging
 
 from exceptions import Exception
 class TwigiError(Exception): pass
@@ -44,13 +44,13 @@ if USE_BIDI:
 # (w3m runs it itself. Not via a server owned by the httpd unix user)
 import mystuff
 import tweepy
-api=tweepy.API(tweepy.auth.BasicAuthHandler(mystuff.user,mystuff.password))
-me=api.me()
-
-menu_ops=[
-    ('home','?op=home'),
-    (me.screen_name,'?op=user'),
-    ('@%s' % me.screen_name,'?op=mentions')]
+api=tweepy.API(tweepy.auth.BasicAuthHandler(mystuff.user,mystuff.password),
+               cache=tweepy.FileCache(CACHE_DIR))
+def menu_ops():
+    me=api.me()
+    return [('home','?op=home'),
+        (me.screen_name,'?op=user'),
+        ('@%s' % me.screen_name,'?op=mentions')]
 def make_menu_entry(op,query,script_name):
     return '[<a href="%s%s">%s</a>]' % (script_name,query,op)
 
@@ -130,7 +130,7 @@ response_template=u"""Content-type: text/html; charset=UTF-8\n
 
 def make_response(script_name='',op='home', title='home', timeline=[],
                     feedback='', status='', re_id=''):
-    menu='\n'.join([make_menu_entry(o[0],o[1],script_name) for o in menu_ops])
+    menu='\n'.join([make_menu_entry(o[0],o[1],script_name) for o in menu_ops()])
     tl='\n'.join(['<li>%s</li>' % format_status(s,script_name,op=='status') for s in timeline])
     return response_template % {
         'script':script_name,
@@ -170,16 +170,16 @@ def main():
             api.get_status(status_id).retweet()
             print 'Location: %s?op=status&id=%s\n' % (script_name,status_id)
             return
-        except:
-            feedback="Network error. Didn't retweet."
+        except Exception,e:
+            feedback="Error: %s. Didn't retweet." % e
             op='status'
     elif op=='tweet':
         try:
             api.update_status(status,re_id)
             print 'Location: %s\n' % script_name
             return
-        except:
-            feedback="Network error. Didn't tweet."
+        except Exception,e:
+            feedback="Error: %s. Didn't tweet." % e
             op='home'
     tlhandler=None # handler to get timeline
     title=op
@@ -197,13 +197,28 @@ def main():
     try:
         timeline=tlhandler()
     except:
-        raise Exception,status_id
         if not feedback:
             feedback="Couldn't fetch timeline :("
             timeline=[]
+    # If it's a retweet, show the original instead
+    timeline=[s.__dict__.get('retweeted_status') or s for s in timeline]
     response=make_response(script_name=script_name,op=op, timeline=timeline,
         title=title, feedback=feedback, status=status, re_id=re_id)
     print response.encode('utf-8')
 
 if __name__=='__main__':
-    main()
+    try:
+        import cgitb; cgitb.enable() # for debugging
+        main()
+    except tweepy.error.TweepError,e:
+       print u"""Content-type: text/html; charset=UTF-8\n
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+    <head>
+        <title>TwiGI - Error</title>
+    </head>
+    <body>
+        <h3>TwiGI - Error</h3>
+        <p>%s</p>
+    </body>
+</html>""" % e

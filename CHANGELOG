@@ -1,3 +1,7 @@
+Ver 0.03, 2010-03-30
+  * Fixed a retweet related bug (use retweeted_status and not the RT iself)
+  * started using FileCache. So simple to do in tweepy.
+  * Nicer error message if rate_limit_status reached
 Ver 0.02, 2010-03-29
   * Supports both "me too" retweet and old fashioned editable RT
   * Neater GUI: less in timeline view, more in single status view
