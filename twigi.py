@@ -185,10 +185,10 @@ class TwiGI():
         if single:
             rts=s.retweets()
             if rts:
-               res+='<p><b>Retweeted by</b>: '+', '.join([format_user(r.author) for r in rts])+'</p>'
+               res+='<p><b>Retweeted by</b>: '+', '.join([self.format_user(r.author) for r in rts])+'</p>'
                res+='</p>'
             res+='<p>'
-            if not self.username in [r.author.id for r in rts]:
+            if not self.username.lower() in [r.author.screen_name.lower() for r in rts]:
                 res+='[<a href="%s">Retweet</a>]' % self.rt_url(s)
             res+='[<a href="%s">Reply</a>][<a href="%s">Editable RT</a>]' % (
                 self.reply_url(s), self.ert_url(s))
