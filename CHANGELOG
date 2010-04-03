@@ -1,3 +1,14 @@
+Ver 0.04, 2010-04-03
+    Now it's OAuth. Breaks compatibility with the w3m version, but we'll live :)
+    Also everything is in a class called TwiGI now so code is [hopefully]
+    neater.
+    Note that all tokens are kept in cookies in plaintext,
+    so a replay attack (via the service itself) is possible.
+    It's still safer than twitpic :), but if you worry about this,
+    revoke access from the app at http://twitter.com/settings/connections
+    when you're through playing with it (you can login again later).
+    This will be fixed soon.
+
 Ver 0.03, 2010-03-30
   * Fixed a retweet related bug (use retweeted_status and not the RT iself)
   * started using FileCache. So simple to do in tweepy.
