@@ -106,7 +106,7 @@ As skinny as a skeleton, as old-fashioned as a dodo, but it can tweet from
 New features will be added whenever procrastination is called for :)<br/>
 Code is available <a target="_blank" href="http://bit.ly/twigigist">here</a>.<br/>
 <p><b>New</b>: auto logout after 15 minutes idle time (also good against replay attacks).</p>
-Other features will be added whenever procrastination is called for.<br/>
+Mobile friendly url: <b>j.mp/mytwit</b><br/>
 Enjoy, @<a target="_blank" href="http://twitter.com/TheRealDod">TheRealDod</a>.
 """
 
@@ -159,7 +159,9 @@ class TwiGI():
             self.cookie['access_secret']=self.auth.access_token.secret
         else: # need to login
             for c in ['access_key','access_secret']:
-                if self.cookie.has_key(c): self.cookie[c]['max-age']=0
+                if self.cookie.has_key(c):
+                    self.cookie[c]='' # we don't want it in the hash :)
+                    self.cookie[c]['max-age']=0
             self.login_url=self.auth.get_authorization_url() # this will make output() show a login page
             self.cookie['request_key']=self.auth.request_token.key
             self.cookie['request_secret']=self.auth.request_token.secret
@@ -169,7 +171,7 @@ class TwiGI():
         not_empty=False
         hash=sha1(consumer_secret) # something a forger wouldn't know
         for key in ['access_key','access_secret','timestamp']:
-            if self.cookie.has_key(key):
+            if self.cookie.has_key(key) and self.cookie[key].value:
                 hash.update(self.cookie[key].value)
                 not_empty=True
         if not_empty:
@@ -250,6 +252,7 @@ class TwiGI():
         if self.op=='logout':
             for c in ['request_key','request_secret','access_key','access_secret','timestamp','hash']:
                 if self.cookie.has_key(c):
+                    self.cookie[c]='' # so that they don't enter the cookie hash and then expire
                     self.cookie[c]['max-age']=0
             self.redirect_url=self.script_name+'?op=home'
         if self.redirect_url: # Do a lame meta refresh redirect, because these are easier to debug
