@@ -88,11 +88,11 @@ CONTENT_TEMPLATE=u"""%(menu)s<br/>
 %(timeline)s
 </%(listtag)s>"""
 
-LOGIN_TEMPLATE="""TwiGI - (pronounced twi-gee-eye) is a minimalistiv Twitter interface
-for lame phones and browsers without Javascript.<br/>
+LOGIN_TEMPLATE="""<h3>Please <a href="%(login_url)s">login via Twitter</a></h3>
+TwiGI - (pronounced twi-gee-eye) is a minimalistic Twitter interface for lame phones and browsers without Javascript.<br/>
+As skinny as a skeleton, as old-fashioned as a dodo, but it can tweet from <i>my</i> phone :)<br/>
 New features will be added whenever procrastination is called for :)<br/>
-Code is available <a target="_blank" href="http://bit.ly/twigigist">here</a>.<br/>
-<h3>Please <a href="%(login_url)s">login via Twitter</a>"""
+Code is available <a target="_blank" href="http://bit.ly/twigigist">here</a>.<br/>"""
 
 ### The TwiGI class
 class TwiGI():
@@ -114,10 +114,10 @@ class TwiGI():
         # Setup OAuth
         self.auth=tweepy.OAuthHandler(consumer_key, consumer_secret)
         logging.debug('new auth object')
-        if self.cookie.get('access_key').value and self.cookie.get('access_secret').value: # already OAuthed
+        if self.cookie.has_key('access_key') and self.cookie.has_key('access_secret'): # already OAuthed
             self.auth.set_access_token(self.cookie['access_key'].value, self.cookie['access_secret'].value)
             logging.debug('set access %s,%s',`self.cookie['access_key'].value`,`self.cookie['access_secret'].value`)
-        elif (self.cookie.get('request_key').value and self.cookie.get('request_secret').value and
+        elif (self.cookie.has_key('request_key') and self.cookie.has_key('request_secret') and
                 'oauth_token' in self.form.keys()): # back from twitter OAuth redirection
             self.redirect_url=self.script_name # to be on the safe side, make sure cookies are stored
             self.auth.set_request_token(self.cookie['request_key'].value, self.cookie['request_secret'].value)
@@ -125,13 +125,13 @@ class TwiGI():
             logging.debug('verifier is %s',`self.form.getvalue('oauth_token')`)
             self.auth.get_access_token(verifier=self.form.getvalue('oauth_token')) # might throw error(?!?)
             for c in ['request_key','request_secret']:
-                if self.cookie.has_key(c): self.cookie[c]='' #don't know how to delete a cookie :(
+                if self.cookie.has_key(c): self.cookie[c]['max-age']=0
             self.cookie['access_key']=self.auth.access_token.key
             self.cookie['access_secret']=self.auth.access_token.secret
             logging.debug('got access %s,%s',`self.cookie['access_key'].value`,`self.cookie['access_secret'].value`)
         else: # need to login
             for c in ['access_key','access_secret']:
-                if self.cookie.has_key(c): self.cookie[c]='' #don't know how to delete a cookie :(
+                if self.cookie.has_key(c): self.cookie[c]['max-age']=0
             self.login_url=self.auth.get_authorization_url() # this will make output() show a login page
             self.cookie['request_key']=self.auth.request_token.key
             self.cookie['request_secret']=self.auth.request_token.secret
