@@ -1,13 +1,9 @@
 #!/usr/bin/python
-""" Ver 0.02, 2010-03-29
+""" Ver 0.04, 2010-04-03
 Copyleft @TheRealDod, license: http://www.gnu.org/licenses/gpl-3.0.txt
 TwiGI (pronounced twi-gee-eye, but Twiggy's also fine because it's lean)
 was originally written as a CGI script to be run internally by the w3m text browser
 (because even m.twitter.com is too smart for it, and I can't even tweet there).
-It could also be cool for stupid mobiles, but it would need OAuth then
-(at the moment it simply reads hard-wired user and password from mystuff.py,
-so no use running it on a public internet server and let everyone
-tweet in your name :) ).
 Features:
 * Minimum moving parts. assumes browser's really dumb
 * Supports "me too" retweet and old fashioned editable RT
@@ -20,93 +16,51 @@ Dependencies:
   doesn't do bidi by itself]
 To do: OAuth, follow/unfollow/block/spam, search, DM
 """
+### for debugging
+import cgitb; cgitb.enable()
 
-USE_BIDI=True # brown people indicator :)
+import logging
+logging.basicConfig(level=logging.ERROR, filename='twigi.log',filemode='a')
+
+### See myoauth_example.py ###
+from myoauth import consumer_key, consumer_secret
+
+### begin setup
+USE_BIDI=False # temporarily off, should be in a cookie. Later.
 CACHE_DIR='cache'
-
+### end setup
 
 from exceptions import Exception
 class TwigiError(Exception): pass
 
-### Bidi
-def bidi(s): return s # fallback: does nothing
-if USE_BIDI:
-    try:
-        from pyfribidi import log2vis,LTR
-        def bidi(s):
-            return log2vis(s,base_direction=LTR)
-    except ImportError:
-        pass
-# kamikaze auth mode - mystuff.py should look like:
-#     user="..."
-#     password="..."
-# You'd better chmod mystuff.py to 600
-# (w3m runs it itself. Not via a server owned by the httpd unix user)
-import mystuff
-import tweepy
-api=tweepy.API(tweepy.auth.BasicAuthHandler(mystuff.user,mystuff.password),
-               cache=tweepy.FileCache(CACHE_DIR))
-def menu_ops():
-    me=api.me()
-    return [('home','?op=home'),
-        (me.screen_name,'?op=user'),
-        ('@%s' % me.screen_name,'?op=mentions')]
-def make_menu_entry(op,query,script_name):
-    return '[<a href="%s%s">%s</a>]' % (script_name,query,op)
+import os,re,cgi,Cookie,tweepy
 
-pat_url = r"((http|https)://([-A-Za-z0-9+&@#/%?=~_()|!:,.;]*[-A-Za-z0-9+&@#/%=~_()|]))"
-pat_atuser = r"@([_a-zA-z][_a-zA-z0-9]*)"
-def urlize(text,script_name):
-    import re
-    html=re.sub(pat_url,r'<a target="_blank" href="\1">\1</a>',text)
-    html=re.sub(pat_atuser,
-        r'@<a target="_blank" href="%s?op=user&name=\1">\1</a>' % script_name,
-        html)
-    html=html.replace('\n','<br/>\n')
-    return html
+### bidi
+try:
+    from pyfribidi import log2vis,LTR
+    def bidi(s,enabled=USE_BIDI):
+        if not enabled: return s
+        return log2vis(s,base_direction=LTR)
+except ImportError: # can't import pyfribidi, never mind
+    def bidi(s,enabled=USE_BIDI): return s
 
-def reply_url(s,script_name):
-    return "%s?op=status&id=%s&status=%%40%s%%20&re_id=%s" % (
-        script_name,s.id,s.author.screen_name,s.id)
-def rt_url(s,script_name):
-    return "%s?op=retweet&id=%s" % (script_name,s.id)
-def ert_url(s,script_name):
-    from urllib2 import quote
-    return "%s?op=status&id=%s&status=RT%%20%%40%s%%20%s&re_id=%s" % (
-        script_name,s.id,s.author.screen_name,
-        quote(s.text.encode('utf-8')),s.id)
-def format_user(u,script_name):
-    return '<a href="%(script)s?op=user&name=%(name)s">%(name)s</a>' % {
-        'script':script_name, 'name':u.screen_name}
-def format_status_link(s,script_name):
-    return '[<a href="%s?op=status&id=%s">#</a>]' % (script_name,s.id)
-def format_re_link(s,script_name):
-    rid=s.in_reply_to_status_id
-    if not rid:
-        return ''
-    return ' <a href="%s?op=status&id=%d"><b>Re:</b> %s</a>' % (script_name,rid,s.in_reply_to_screen_name)
-def format_status(s,script_name,full=False):
-    from relativeDates import getRelativeTime
-    from time import mktime
-    res=not full and format_status_link(s,script_name) or ''
-    res+='%s %s%s <i>%s</i>' % (
-        format_user(s.author,script_name),
-        urlize(bidi(s.text),script_name),
-        format_re_link(s,script_name),
-        getRelativeTime(mktime(s.created_at.utctimetuple())))
-    if full:
-        rts=s.retweets()
-        if rts:
-           res+='<p><b>Retweeted by</b>: ' + ', '.join([format_user(r.author,script_name) for r in rts])
-        res+='<p>'
-        if not api.me().id in [r.author.id for r in rts]:
-            res+='[<a href="%s">Retweet</a>]' % rt_url(s,script_name)
-        res+='[<a href="%s">Reply</a>][<a href="%s">Editable RT</a>]' % (
-            reply_url(s,script_name), ert_url(s,script_name))
-        res+='</p>'
-    return res
 
-response_template=u"""Content-type: text/html; charset=UTF-8\n
+
+### patterns for urlize
+PAT_URL = r"((http|https)://([-A-Za-z0-9+&@#/%?=~_()|!:,.;]*[-A-Za-z0-9+&@#/%=~_()|]))"
+PAT_ATUSER = r"@([_a-zA-z][_a-zA-z0-9]*)"
+
+REDIRECT_TEMPLATE=u"""%(headers)s\n
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+    <head>
+        <title>TwiGI - redirecting...</title>
+        <meta http-equiv="refresh" content="0; url=%(redirect)s"/>
+    </head>
+    <body>
+    Redirecting...
+    </body>
+</html>"""
+RESPONSE_TEMPLATE=u"""%(headers)s\n
 <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
 <html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
     <head>
@@ -114,111 +68,237 @@ response_template=u"""Content-type: text/html; charset=UTF-8\n
     </head>
     <body>
         <h3>TwiGI - %(title)s</h3>
-        %(menu)s<br/>
-        <form action="%(script)s">
-            <input type="hidden" name="op" value="tweet">
-            <input type="hidden" name="re_id" value="%(re_id)s">
-            <input name="status" size="60" maxlength="140" value="%(status)s">
-            <input type="submit" value="Tweet">
-        </form>
-        %(feedback)s
-        <%(listtag)s>
-%(timeline)s
-        </%(listtag)s>
+        <div id="content">%(content)s</div>
     </body>
 </html>"""
+def make_response(title='(untitled)',content='???',
+        headers='Content-Type: text/html'):
+    return RESPONSE_TEMPLATE % {
+        'title':title,'content':content,'headers':headers}
 
-def make_response(script_name='',op='home', title='home', timeline=[],
-                    feedback='', status='', re_id=''):
-    menu='\n'.join([make_menu_entry(o[0],o[1],script_name) for o in menu_ops()])
-    tl='\n'.join(['<li>%s</li>' % format_status(s,script_name,op=='status') for s in timeline])
-    return response_template % {
-        'script':script_name,
-        'listtag':op=='status' and 'ul' or 'ol',
-        'op':op,
-        'title':title,
-        'menu':menu,
-        'feedback':feedback and ('<b>%s</b><br/>' % feedback) or '',
-        'status':status.replace('"','&quot;'), # for value="%(status)s"
-        're_id':re_id,
-        'timeline':tl}
+CONTENT_TEMPLATE=u"""%(menu)s<br/>
+<form action="%(script)s">
+    <input type="hidden" name="op" value="tweet">
+    <input type="hidden" name="re_id" value="%(re_id)s">
+    <input name="status" maxlength="140" value="%(status)s">
+    <input type="submit" value="Tweet">
+</form>
+%(feedback)s
+<%(listtag)s>
+%(timeline)s
+</%(listtag)s>"""
 
-def main():
-    import os,cgi
-    try:
-        script_name=os.environ['SCRIPT_NAME']
-    except:
-        raise TwigiError,"Program should run as a cgi"
-    form = cgi.FieldStorage()
-    feedback=''
-    op=form.getvalue('op','home')
-    name=form.getvalue('name',api.me().screen_name) # for op=='user'
-    status_id=form.getvalue('id',None) # for op=='status' and op=='retweet'
-    status=unicode(form.getvalue('status',''),'utf-8')
-    re_id=form.getvalue('re_id','').strip() or None
-    if len(status)>140:
-        feedback='truncated "%s"' % status[140:]
-        status=status[:140]
-        if op=='tweet':
-            feedback+=' (tweet not sent)'
-            op='home'
-    if op=='tweet' and not status:
-        feedack="Didn't send an empty tweet"
-        op='home'
-    if op=='retweet':
+LOGIN_TEMPLATE="""TwiGI - (pronounced twi-gee-eye) is a minimalistiv Twitter interface
+for lame phones and browsers without Javascript.<br/>
+New features will be added whenever procrastination is called for :)<br/>
+Code is available <a target="_blank" href="http://bit.ly/twigigist">here</a>.<br/>
+<h3>Please <a href="%(login_url)s">login via Twitter</a>"""
+
+### The TwiGI class
+class TwiGI():
+    def __init__(self):
         try:
-            api.get_status(status_id).retweet()
-            print 'Location: %s?op=status&id=%s\n' % (script_name,status_id)
-            return
-        except Exception,e:
-            feedback="Error: %s. Didn't retweet." % e
-            op='status'
-    elif op=='tweet':
+            self.script_name=os.environ['SCRIPT_NAME']
+        except:
+            raise TwigiError,"Program should run as a cgi"
+        self.username=None
+        self.login_url=None # used for OAuth
+        self.redirect_url=None # used for OAuth
+        self.form = cgi.FieldStorage()
+        self.cookie = Cookie.SimpleCookie()
+        if os.environ.has_key('HTTP_COOKIE'):
+            self.cookie.load(os.environ['HTTP_COOKIE'])
+        logging.debug('query: %s',`os.environ.get('QUERY_STRING')`)
+        logging.debug('form keys: %s',`self.form.keys()`)
+        logging.debug('cookie: %s',`self.cookie.output()`)
+        # Setup OAuth
+        self.auth=tweepy.OAuthHandler(consumer_key, consumer_secret)
+        logging.debug('new auth object')
+        if self.cookie.get('access_key').value and self.cookie.get('access_secret').value: # already OAuthed
+            self.auth.set_access_token(self.cookie['access_key'].value, self.cookie['access_secret'].value)
+            logging.debug('set access %s,%s',`self.cookie['access_key'].value`,`self.cookie['access_secret'].value`)
+        elif (self.cookie.get('request_key').value and self.cookie.get('request_secret').value and
+                'oauth_token' in self.form.keys()): # back from twitter OAuth redirection
+            self.redirect_url=self.script_name # to be on the safe side, make sure cookies are stored
+            self.auth.set_request_token(self.cookie['request_key'].value, self.cookie['request_secret'].value)
+            logging.debug('set request %s,%s',`self.cookie['request_key'].value`,`self.cookie['request_secret'].value`)
+            logging.debug('verifier is %s',`self.form.getvalue('oauth_token')`)
+            self.auth.get_access_token(verifier=self.form.getvalue('oauth_token')) # might throw error(?!?)
+            for c in ['request_key','request_secret']:
+                if self.cookie.has_key(c): self.cookie[c]='' #don't know how to delete a cookie :(
+            self.cookie['access_key']=self.auth.access_token.key
+            self.cookie['access_secret']=self.auth.access_token.secret
+            logging.debug('got access %s,%s',`self.cookie['access_key'].value`,`self.cookie['access_secret'].value`)
+        else: # need to login
+            for c in ['access_key','access_secret']:
+                if self.cookie.has_key(c): self.cookie[c]='' #don't know how to delete a cookie :(
+            self.login_url=self.auth.get_authorization_url() # this will make output() show a login page
+            self.cookie['request_key']=self.auth.request_token.key
+            self.cookie['request_secret']=self.auth.request_token.secret
+            logging.debug('got request %s,%s',`self.cookie['request_key'].value`,`self.cookie['request_secret'].value`)
+            logging.debug('login url: %s',self.login_url)
+
+    def make_headers(self):
+        res="Content-Type: text/html; charset=utf-8"
+        c=self.cookie.output()
+        if c: res+='\n'+c
+        return res
+
+    def urlize(self,text):
+        html=re.sub(PAT_URL,r'<a target="_blank" href="\1">\1</a>',text)
+        html=re.sub(PAT_ATUSER,
+            r'@<a target="_blank" href="%s?op=user&name=\1">\1</a>' % self.script_name,
+            html)
+        html=html.replace('\n','<br/>\n')
+        return html
+
+    def reply_url(self,s):
+        return "%s?op=status&id=%s&status=%%40%s%%20&re_id=%s" % (
+            self.script_name,s.id,s.author.screen_name,s.id)
+    def rt_url(self,s):
+        return "%s?op=retweet&id=%s" % (self.script_name,s.id)
+    def ert_url(self,s):
+        from urllib2 import quote
+        return "%s?op=status&id=%s&status=RT%%20%%40%s%%20%s&re_id=%s" % (
+            self.script_name,s.id,s.author.screen_name,
+            quote(s.text.encode('utf-8')),s.id)
+    def format_user(self,u):
+        return '<a href="%(script)s?op=user&name=%(name)s">%(name)s</a>' % {
+            'script':self.script_name, 'name':u.screen_name}
+    def format_re_link(self,s):
+        rid=s.in_reply_to_status_id
+        if not rid: return ''
+        return '<a href="%s?op=status&id=%d"><b>Re:</b> %s</a>' % (
+            self.script_name,rid,s.in_reply_to_screen_name)
+    def format_status_link(self,s):
+        return '[<a href="%s?op=status&id=%s">&bull;</a>]' % (
+            self.script_name,s.id)
+    def format_status(self,s,single=False):
+        from relativeDates import getRelativeTime
+        from time import mktime
+        res=not single and self.format_status_link(s) or ''
+        res+='%s %s %s <i>%s</i>' % (
+            self.format_user(s.author),
+            self.urlize(bidi(s.text)),
+            self.format_re_link(s),
+            getRelativeTime(mktime(s.created_at.utctimetuple())))
+        if single:
+            rts=s.retweets()
+            if rts:
+               res+='<p><b>Retweeted by</b>: '+', '.join([format_user(r.author) for r in rts])+'</p>'
+               res+='</p>'
+            res+='<p>'
+            if not self.username in [r.author.id for r in rts]:
+                res+='[<a href="%s">Retweet</a>]' % self.rt_url(s)
+            res+='[<a href="%s">Reply</a>][<a href="%s">Editable RT</a>]' % (
+                self.reply_url(s), self.ert_url(s))
+            res+='</p>'
+        return res
+
+    def menu_ops(self):
+        if self.username:
+            return [('home','?op=home'),
+                (self.username,'?op=user'),
+                ('@%s' % self.username,'?op=mentions'),
+                ('logout','?op=logout')]
+        else: # just in case we're not *at* the login page(?!?)
+            return [('To welcome page','?op=logout')]
+    def make_menu_entry(self,op,query):
+        return '[<a href="%s%s">%s</a>]' % (self.script_name,query,op)
+
+    def output(self):
+        self.op=self.form.getvalue('op','home')
+        if self.op=='logout':
+            for c in ['request_key','request_secret','access_key','access_secret']:
+                if self.cookie.has_key(c):
+                    self.cookie[c]=''
+            self.redirect_url=self.script_name+'?op=home'
+        if self.redirect_url: # Do a lame meta refresh redirect, because these are easier to debug
+            return REDIRECT_TEMPLATE % {'headers':self.make_headers(), 'redirect':self.redirect_url}
+        if self.login_url:
+           return make_response(
+               headers=self.make_headers(),
+               title='Please login',
+               content=LOGIN_TEMPLATE % {'login_url':self.login_url})
+        # create the api (auth should be fine if we got this far)
+        self.username=self.auth.get_username()
+        self.api=tweepy.API(self.auth,cache=tweepy.FileCache(CACHE_DIR))
+        # feedback: for error messages and notifications
+        self.feedback=''
+        # name: for op=='user'
+        self.name=self.form.getvalue('name',self.username)
+        # status_id: for op=='status' and op=='retweet'
+        self.status_id=self.form.getvalue('id',None)
+        # status: information to put inside the for field
+        # (except if op=='tweet', where this is what we tweet)
+        self.status=unicode(self.form.getvalue('status',''),'utf-8')
+        self.re_id=self.form.getvalue('re_id','').strip() or None
+        if len(self.status)>140:
+            self.feedback='truncated "%s"' % self.status[140:]
+            self.status=self.status[:140]
+            if self.op=='tweet':
+                self.feedback+=' (tweet not sent)'
+                self.op='home'
+        if self.op=='tweet' and not self.status:
+            self.feedack="Didn't send an empty tweet"
+            self.op='home'
+        if self.op=='retweet':
+            try:
+                self.api.get_status(self.status_id).retweet()
+                print 'Location: %s?op=status&id=%s\n' % (
+                    self.script_name,self.status_id)
+                return
+            except Exception,e:
+                self.feedback="Error: %s. Didn't retweet." % e
+                self.op='status'
+        elif self.op=='tweet':
+            try:
+                self.api.update_status(self.status,self.re_id)
+                print 'Location: %s\n' % self.script_name
+                return
+            except Exception,e:
+                self.feedback="Error: %s. Didn't tweet." % e
+                self.op='home'
+        tlhandler=None # handler to get timeline
+        title=self.op
+        if self.op=='mentions':
+            tlhandler=self.api.mentions
+            title='@'+self.username
+        elif self.op=='user':
+            tlhandler=lambda: self.api.user_timeline(self.name)
+            title=self.name
+        elif self.op=='status':
+            tlhandler=lambda: [self.api.get_status(self.status_id)]
+        else: # gracefully deciding it's "home"
+            self.op='home'
+            tlhandler=self.api.home_timeline
         try:
-            api.update_status(status,re_id)
-            print 'Location: %s\n' % script_name
-            return
+            timeline=tlhandler()
         except Exception,e:
-            feedback="Error: %s. Didn't tweet." % e
-            op='home'
-    tlhandler=None # handler to get timeline
-    title=op
-    if op=='mentions':
-        tlhandler=api.mentions
-        title='@'+api.me().screen_name
-    elif op=='user':
-        tlhandler=lambda: api.user_timeline(name)
-        title=name
-    elif op=='status':
-        tlhandler=lambda: [api.get_status(status_id)]
-    else: # gracefully deciding it's "home"
-        op='home'
-        tlhandler=api.home_timeline
-    try:
-        timeline=tlhandler()
-    except:
-        if not feedback:
-            feedback="Couldn't fetch timeline :("
+            self.feedback=str(e)
             timeline=[]
-    # If it's a retweet, show the original instead
-    timeline=[s.__dict__.get('retweeted_status') or s for s in timeline]
-    response=make_response(script_name=script_name,op=op, timeline=timeline,
-        title=title, feedback=feedback, status=status, re_id=re_id)
-    print response.encode('utf-8')
+        # If it's a retweet, show the original instead
+        timeline=[s.__dict__.get('retweeted_status') or s for s in timeline]
+        menu='\n'.join(
+            [self.make_menu_entry(o[0],o[1]) for o in self.menu_ops()])
+        tl='\n'.join(
+            ['<li>%s</li>' % self.format_status(s,single=self.op=='status')
+                for s in timeline])
+        response_content=CONTENT_TEMPLATE % {
+            'script':self.script_name,
+            'op':self.op,
+            'menu':menu,
+            'status':self.status,
+            'timeline':tl,
+            'listtag':self.op=='status' and 'ul' or 'ol',
+            'feedback':self.feedback and ('<b>%s</b><br/>' % self.feedback) or '',
+            're_id':self.re_id}
+        response=make_response(headers=self.make_headers(),
+            title=title, content=response_content)
+        return response.encode('utf-8')
 
 if __name__=='__main__':
     try:
-        import cgitb; cgitb.enable() # for debugging
-        main()
-    except tweepy.error.TweepError,e:
-       print u"""Content-type: text/html; charset=UTF-8\n
-<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
-<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
-    <head>
-        <title>TwiGI - Error</title>
-    </head>
-    <body>
-        <h3>TwiGI - Error</h3>
-        <p>%s</p>
-    </body>
-</html>""" % e
+        print TwiGI().output()
+    except (tweepy.error.TweepError,TwigiError),e:
+        print make_response(title="Error", content=e)
