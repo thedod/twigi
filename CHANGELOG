@@ -1,3 +1,8 @@
+Ver 0.05, 2010-04-04
+    In order to avoid replay attacks via TwiGI itself (plaintext tokens aren't
+    useful for anything else), cookies get a timestamp, and a hash is computed
+    from acces key+secret and timestamp, as well as consumer key+secret
+    (later two are not known to attackers). Peer review is welcome.
 Ver 0.04, 2010-04-03
     Now it's OAuth. Breaks compatibility with the w3m version, but we'll live :)
     Also everything is in a class called TwiGI now so code is [hopefully]

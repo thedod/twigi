@@ -1,5 +1,5 @@
 #!/usr/bin/python
-""" Ver 0.04, 2010-04-03
+""" Ver 0.05, 2010-04-03
 Copyleft @TheRealDod, license: http://www.gnu.org/licenses/gpl-3.0.txt
 TwiGI (pronounced twi-gee-eye, but Twiggy's also fine because it's lean)
 was originally written as a CGI script to be run internally by the w3m text browser
@@ -9,12 +9,14 @@ Features:
 * Supports "me too" retweet and old fashioned editable RT
 * Enumerates all retweeters of a status (not just "retweeted by 5 people")
 * Support for bidi (Arabic, Farsi, Hebrew, etc.)
+  [currently off because my phone does bidi fine, but will be user-controlled
+   and cookie-based in the next version]
 Dependencies:
 * tweepy (http://gitorious.org/tweepy)
 * pyfribidi (http://pyfribidi.sourceforge.net/ or apt-get python-pyfribidi)
   [pyfribidi is optional: only if you read bidi languages and your os/browser
   doesn't do bidi by itself]
-To do: OAuth, follow/unfollow/block/spam, search, DM
+To do: display bio, follow/unfollow/block/spam, search, DM
 """
 ### for debugging
 import cgitb; cgitb.enable()
@@ -27,6 +29,7 @@ from myoauth import consumer_key, consumer_secret
 
 ### begin setup
 USE_BIDI=False # temporarily off, should be in a cookie. Later.
+IDLE_TIMEOUT_SECONDS=60*15
 CACHE_DIR='cache'
 ### end setup
 
@@ -34,6 +37,11 @@ from exceptions import Exception
 class TwigiError(Exception): pass
 
 import os,re,cgi,Cookie,tweepy
+import relativeDates,time
+
+### timestamp for integrity checks
+def maketimestamp():
+    return int(time.mktime(time.gmtime()))
 
 ### bidi
 try:
@@ -86,13 +94,21 @@ CONTENT_TEMPLATE=u"""%(menu)s<br/>
 %(feedback)s
 <%(listtag)s>
 %(timeline)s
-</%(listtag)s>"""
+</%(listtag)s>
+<i>Bugs? Question? tell @<a href="%(script)s?status=@TheRealDod%%20re%%20%%23TWiGI%%20">TheRealDod</a></i><br/>
+"""
 
 LOGIN_TEMPLATE="""<h3>Please <a href="%(login_url)s">login via Twitter</a></h3>
+<i>Note: debugging stuff at the moment. Expect temporary bumps :s</i><br/>
 TwiGI - (pronounced twi-gee-eye) is a minimalistic Twitter interface for lame phones and browsers without Javascript.<br/>
-As skinny as a skeleton, as old-fashioned as a dodo, but it can tweet from <i>my</i> phone :)<br/>
+As skinny as a skeleton, as old-fashioned as a dodo, but it can tweet from
+<a target="_blank" href="http://twitpic.com/1cskf1">my</a> phone :)<br/>
 New features will be added whenever procrastination is called for :)<br/>
-Code is available <a target="_blank" href="http://bit.ly/twigigist">here</a>.<br/>"""
+Code is available <a target="_blank" href="http://bit.ly/twigigist">here</a>.<br/>
+<p><b>New</b>: auto logout after 15 minutes idle time (also good against replay attacks).</p>
+Other features will be added whenever procrastination is called for.<br/>
+Enjoy, @<a target="_blank" href="http://twitter.com/TheRealDod">TheRealDod</a>.
+"""
 
 ### The TwiGI class
 class TwiGI():
@@ -102,44 +118,69 @@ class TwiGI():
         except:
             raise TwigiError,"Program should run as a cgi"
         self.username=None
-        self.login_url=None # used for OAuth
-        self.redirect_url=None # used for OAuth
+        self.login_url=None # If not None, output() will produce login page
+        self.login_title='Welcome' # Might change to 'Auto logged out' etc.
+        self.redirect_url=None
         self.form = cgi.FieldStorage()
         self.cookie = Cookie.SimpleCookie()
         if os.environ.has_key('HTTP_COOKIE'):
             self.cookie.load(os.environ['HTTP_COOKIE'])
-        logging.debug('query: %s',`os.environ.get('QUERY_STRING')`)
-        logging.debug('form keys: %s',`self.form.keys()`)
-        logging.debug('cookie: %s',`self.cookie.output()`)
-        # Setup OAuth
+        # Integrity checks
+        cookie_problem=None
+        # Check if expired
+        try:
+            ts=int(self.cookie['timestamp'].value)
+        except: # no timestamp cookie
+            ts=None
+        if ts and maketimestamp()-ts>IDLE_TIMEOUT_SECONDS:
+            cookie_problem='Auto logged out because of idle time'
+        else: # check for forged cookie
+            hash=self.cookie.has_key('hash') and self.cookie['hash'].value or ''
+            if hash!=self.cookiehash():
+                cookie_problem="Corrupt cookies, or you're trying to hack this :)"
+        if cookie_problem:
+            self.login_title=cookie_problem
+        # Find out where we are OAuth-wise
         self.auth=tweepy.OAuthHandler(consumer_key, consumer_secret)
-        logging.debug('new auth object')
-        if self.cookie.has_key('access_key') and self.cookie.has_key('access_secret'): # already OAuthed
+        if not cookie_problem and self.cookie.has_key('access_key') and self.cookie.has_key('access_secret'):
+            # already OAuthed
             self.auth.set_access_token(self.cookie['access_key'].value, self.cookie['access_secret'].value)
-            logging.debug('set access %s,%s',`self.cookie['access_key'].value`,`self.cookie['access_secret'].value`)
-        elif (self.cookie.has_key('request_key') and self.cookie.has_key('request_secret') and
-                'oauth_token' in self.form.keys()): # back from twitter OAuth redirection
-            self.redirect_url=self.script_name # to be on the safe side, make sure cookies are stored
+        elif (not cookie_problem and
+              self.cookie.has_key('request_key') and
+              self.cookie.has_key('request_secret') and
+              'oauth_token' in self.form.keys()):
+            # back from twitter OAuth redirection
+            self.redirect_url=self.script_name # make sure cookies are stored, in case of script error or old IIS server :)
             self.auth.set_request_token(self.cookie['request_key'].value, self.cookie['request_secret'].value)
-            logging.debug('set request %s,%s',`self.cookie['request_key'].value`,`self.cookie['request_secret'].value`)
-            logging.debug('verifier is %s',`self.form.getvalue('oauth_token')`)
             self.auth.get_access_token(verifier=self.form.getvalue('oauth_token')) # might throw error(?!?)
             for c in ['request_key','request_secret']:
                 if self.cookie.has_key(c): self.cookie[c]['max-age']=0
             self.cookie['access_key']=self.auth.access_token.key
             self.cookie['access_secret']=self.auth.access_token.secret
-            logging.debug('got access %s,%s',`self.cookie['access_key'].value`,`self.cookie['access_secret'].value`)
         else: # need to login
             for c in ['access_key','access_secret']:
                 if self.cookie.has_key(c): self.cookie[c]['max-age']=0
             self.login_url=self.auth.get_authorization_url() # this will make output() show a login page
             self.cookie['request_key']=self.auth.request_token.key
             self.cookie['request_secret']=self.auth.request_token.secret
-            logging.debug('got request %s,%s',`self.cookie['request_key'].value`,`self.cookie['request_secret'].value`)
-            logging.debug('login url: %s',self.login_url)
-
+    def cookiehash(self):
+        'generate hash of timestamp and "perishable cookies"'
+        from hashlib import sha1
+        not_empty=False
+        hash=sha1(consumer_secret) # something a forger wouldn't know
+        for key in ['access_key','access_secret','timestamp']:
+            if self.cookie.has_key(key):
+                hash.update(self.cookie[key].value)
+                not_empty=True
+        if not_empty:
+            hash.update(consumer_key) # for good measure :)
+            return hash.digest().encode('base64').strip()
+        # The "fresh out of cookies" case :)
+        return ''
     def make_headers(self):
         res="Content-Type: text/html; charset=utf-8"
+        self.cookie['timestamp']=maketimestamp()
+        self.cookie['hash']=self.cookiehash()
         c=self.cookie.output()
         if c: res+='\n'+c
         return res
@@ -174,14 +215,12 @@ class TwiGI():
         return '[<a href="%s?op=status&id=%s">&bull;</a>]' % (
             self.script_name,s.id)
     def format_status(self,s,single=False):
-        from relativeDates import getRelativeTime
-        from time import mktime
         res=not single and self.format_status_link(s) or ''
-        res+='%s %s %s <i>%s</i>' % (
+        res+='%s %s %s <span dir="ltr"><i>%s</i></span>' % (
             self.format_user(s.author),
             self.urlize(bidi(s.text)),
             self.format_re_link(s),
-            getRelativeTime(mktime(s.created_at.utctimetuple())))
+             relativeDates.getRelativeTime(time.mktime(s.created_at.utctimetuple())))
         if single:
             rts=s.retweets()
             if rts:
@@ -209,16 +248,16 @@ class TwiGI():
     def output(self):
         self.op=self.form.getvalue('op','home')
         if self.op=='logout':
-            for c in ['request_key','request_secret','access_key','access_secret']:
+            for c in ['request_key','request_secret','access_key','access_secret','timestamp','hash']:
                 if self.cookie.has_key(c):
-                    self.cookie[c]=''
+                    self.cookie[c]['max-age']=0
             self.redirect_url=self.script_name+'?op=home'
         if self.redirect_url: # Do a lame meta refresh redirect, because these are easier to debug
             return REDIRECT_TEMPLATE % {'headers':self.make_headers(), 'redirect':self.redirect_url}
         if self.login_url:
            return make_response(
                headers=self.make_headers(),
-               title='Please login',
+               title=self.login_title,
                content=LOGIN_TEMPLATE % {'login_url':self.login_url})
         # create the api (auth should be fine if we got this far)
         self.username=self.auth.get_username()
@@ -245,20 +284,19 @@ class TwiGI():
         if self.op=='retweet':
             try:
                 self.api.get_status(self.status_id).retweet()
-                print 'Location: %s?op=status&id=%s\n' % (
-                    self.script_name,self.status_id)
-                return
+                self.feedback="Retweeted."
             except Exception,e:
                 self.feedback="Error: %s. Didn't retweet." % e
-                self.op='status'
+            self.op='status'
         elif self.op=='tweet':
             try:
                 self.api.update_status(self.status,self.re_id)
-                print 'Location: %s\n' % self.script_name
-                return
+                self.feedback="Tweeted."
+                self.status=""
+                self.re_id=""
             except Exception,e:
                 self.feedback="Error: %s. Didn't tweet." % e
-                self.op='home'
+            self.op='home'
         tlhandler=None # handler to get timeline
         title=self.op
         if self.op=='mentions':
