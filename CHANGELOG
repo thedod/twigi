@@ -1,3 +1,7 @@
+Ver 0.06, 2010-04-15
+    * Bidi support is back
+    * Links now go via http://www.google.com/gwt/n mobile page formatter
+    * Bug fixes
 Ver 0.05, 2010-04-04
     In order to avoid replay attacks via TwiGI itself (plaintext tokens aren't
     useful for anything else), cookies get a timestamp, and a hash is computed
