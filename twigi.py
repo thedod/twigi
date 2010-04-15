@@ -1,22 +1,17 @@
 #!/usr/bin/python
-""" Ver 0.05, 2010-04-03
+""" Ver 0.06, 2010-04-15
 Copyleft @TheRealDod, license: http://www.gnu.org/licenses/gpl-3.0.txt
 TwiGI (pronounced twi-gee-eye, but Twiggy's also fine because it's lean)
-was originally written as a CGI script to be run internally by the w3m text browser
-(because even m.twitter.com is too smart for it, and I can't even tweet there).
-Features:
-* Minimum moving parts. assumes browser's really dumb
-* Supports "me too" retweet and old fashioned editable RT
-* Enumerates all retweeters of a status (not just "retweeted by 5 people")
-* Support for bidi (Arabic, Farsi, Hebrew, etc.)
-  [currently off because my phone does bidi fine, but will be user-controlled
-   and cookie-based in the next version]
+is a minimalistic twitter web GUI for dumb phones and browsers without 
+JS and/or bidi support.
+
+To do: show bio, follow/unfollow/block/spam, search (and #hash links), DM
+
 Dependencies:
 * tweepy (http://gitorious.org/tweepy)
 * pyfribidi (http://pyfribidi.sourceforge.net/ or apt-get python-pyfribidi)
-  [pyfribidi is optional: only if you read bidi languages and your os/browser
-  doesn't do bidi by itself]
-To do: display bio, follow/unfollow/block/spam, search, DM
+  [pyfribidi is optional: only if you read bidi languages and client's
+  phone/browser doesn't do bidi by itself]
 """
 ### for debugging
 import cgitb; cgitb.enable()
@@ -28,8 +23,8 @@ logging.basicConfig(level=logging.ERROR, filename='twigi.log',filemode='a')
 from myoauth import consumer_key, consumer_secret
 
 ### begin setup
-USE_BIDI=False # temporarily off, should be in a cookie. Later.
-IDLE_TIMEOUT_SECONDS=60*15
+DEFAULT_BIDI=False # most modern phones do their own bidi
+IDLE_TIMEOUT_SECONDS=60*60
 CACHE_DIR='cache'
 ### end setup
 
@@ -46,13 +41,13 @@ def maketimestamp():
 ### bidi
 try:
     from pyfribidi import log2vis,LTR
-    def bidi(s,enabled=USE_BIDI):
+    def bidi(s,enabled=DEFAULT_BIDI):
         if not enabled: return s
         return log2vis(s,base_direction=LTR)
+    FRIBIDI_SUPPORTED=True
 except ImportError: # can't import pyfribidi, never mind
-    def bidi(s,enabled=USE_BIDI): return s
-
-
+    def bidi(s,enabled=DEFAULT_BIDI): return s
+    FRIBIDI_SUPPORTED=False # don't show r2l/l2r menu items
 
 ### patterns for urlize
 PAT_URL = r"((http|https)://([-A-Za-z0-9+&@#/%?=~_()|!:,.;]*[-A-Za-z0-9+&@#/%=~_()|]))"
@@ -99,14 +94,12 @@ CONTENT_TEMPLATE=u"""%(menu)s<br/>
 """
 
 LOGIN_TEMPLATE="""<h3>Please <a href="%(login_url)s">login via Twitter</a></h3>
-<i>Note: debugging stuff at the moment. Expect temporary bumps :s</i><br/>
+Mobile friendly url: <b>j.mp/mytwit</b><br/>
 TwiGI - (pronounced twi-gee-eye) is a minimalistic Twitter interface for lame phones and browsers without Javascript.<br/>
 As skinny as a skeleton, as old-fashioned as a dodo, but it can tweet from
 <a target="_blank" href="http://twitpic.com/1cskf1">my</a> phone :)<br/>
 New features will be added whenever procrastination is called for :)<br/>
 Code is available <a target="_blank" href="http://bit.ly/twigigist">here</a>.<br/>
-<p><b>New</b>: auto logout after 15 minutes idle time (also good against replay attacks).</p>
-Mobile friendly url: <b>j.mp/mytwit</b><br/>
 Enjoy, @<a target="_blank" href="http://twitter.com/TheRealDod">TheRealDod</a>.
 """
 
@@ -165,6 +158,13 @@ class TwiGI():
             self.login_url=self.auth.get_authorization_url() # this will make output() show a login page
             self.cookie['request_key']=self.auth.request_token.key
             self.cookie['request_secret']=self.auth.request_token.secret
+        # take care of bidi
+        if self.form.has_key('bidi'):
+            self.cookie['bidi']=self.form.getvalue('bidi')
+        if self.cookie.has_key('bidi'):
+            self.use_bidi=self.cookie['bidi'].value.lower()=='on'
+        else:
+            self.use_bidi=DEFAULT_BIDI
     def cookiehash(self):
         'generate hash of timestamp and "perishable cookies"'
         from hashlib import sha1
@@ -188,9 +188,13 @@ class TwiGI():
         return res
 
     def urlize(self,text):
-        html=re.sub(PAT_URL,r'<a target="_blank" href="\1">\1</a>',text)
+        def link_handler(m):
+            from urllib2 import quote
+            return '<a target="_blank" href="http://google.com/gwt/n?u=%s">%s</a>' % (
+                quote(m.group(1)),m.group(1))
+        html=re.sub(PAT_URL,link_handler,text)
         html=re.sub(PAT_ATUSER,
-            r'@<a target="_blank" href="%s?op=user&name=\1">\1</a>' % self.script_name,
+            r'@<a href="%s?op=user&name=\1">\1</a>' % self.script_name,
             html)
         html=html.replace('\n','<br/>\n')
         return html
@@ -220,7 +224,7 @@ class TwiGI():
         res=not single and self.format_status_link(s) or ''
         res+='%s %s %s <span dir="ltr"><i>%s</i></span>' % (
             self.format_user(s.author),
-            self.urlize(bidi(s.text)),
+            self.urlize(bidi(s.text,enabled=self.use_bidi)),
             self.format_re_link(s),
              relativeDates.getRelativeTime(time.mktime(s.created_at.utctimetuple())))
         if single:
@@ -238,10 +242,15 @@ class TwiGI():
 
     def menu_ops(self):
         if self.username:
-            return [('home','?op=home'),
+            res=[('home','?op=home'),
                 (self.username,'?op=user'),
-                ('@%s' % self.username,'?op=mentions'),
-                ('logout','?op=logout')]
+                ('@%s' % self.username,'?op=mentions')]
+            if FRIBIDI_SUPPORTED:
+                res.append(self.use_bidi and (
+                    'l2r','?bidi=off') or (
+                    'r2l','?bidi=on'))
+            res.append(('logout','?op=logout'))
+            return res
         else: # just in case we're not *at* the login page(?!?)
             return [('To welcome page','?op=logout')]
     def make_menu_entry(self,op,query):
@@ -329,7 +338,7 @@ class TwiGI():
             'script':self.script_name,
             'op':self.op,
             'menu':menu,
-            'status':self.status,
+            'status':self.status.replace('"','&quot;'),
             'timeline':tl,
             'listtag':self.op=='status' and 'ul' or 'ol',
             'feedback':self.feedback and ('<b>%s</b><br/>' % self.feedback) or '',
