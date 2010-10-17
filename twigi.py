@@ -1,5 +1,5 @@
 #!/usr/bin/python
-""" Ver 0.06, 2010-04-15
+""" Ver 0.04, 2010-10-17
 Copyleft @TheRealDod, license: http://www.gnu.org/licenses/gpl-3.0.txt
 TwiGI (pronounced twi-gee-eye, but Twiggy's also fine because it's lean)
 is a minimalistic twitter web GUI for dumb phones and browsers without 
@@ -17,7 +17,7 @@ Dependencies:
 import cgitb; cgitb.enable()
 
 import logging
-logging.basicConfig(level=logging.ERROR, filename='twigi.log',filemode='a')
+logging.basicConfig(level=logging.INFO, filename='.twigi.log',filemode='a',format='%(asctime)s %(levelname)s: %(message)s')
 
 ### See myoauth_example.py ###
 from myoauth import consumer_key, consumer_secret
@@ -25,7 +25,6 @@ from myoauth import consumer_key, consumer_secret
 ### begin setup
 DEFAULT_BIDI=False # most modern phones do their own bidi
 IDLE_TIMEOUT_SECONDS=60*60
-CACHE_DIR='cache'
 ### end setup
 
 from exceptions import Exception
@@ -95,11 +94,11 @@ CONTENT_TEMPLATE=u"""%(menu)s<br/>
 
 LOGIN_TEMPLATE="""<h3>Please <a href="%(login_url)s">login via Twitter</a></h3>
 Mobile friendly url: <b>j.mp/mytwit</b><br/>
-TwiGI - (pronounced twi-gee-eye) is a minimalistic Twitter interface for lame phones and browsers without Javascript.<br/>
-As skinny as a skeleton, as old-fashioned as a dodo, but it can tweet from
-<a target="_blank" href="http://twitpic.com/1cskf1">my</a> phone :)<br/>
+TwiGI  (pronounced twi-gee-eye), is a minimalistic Twitter interface for lame phones and browsers without Javascript.<br/>
+As skinny as a skeleton, as old-fashioned as a dodo, but it could even tweet from my
+<a target="_blank" href="http://twitpic.com/1cskf1">old phone</a>, and that's something us 3<sup>rd</sup> worlders find handy.<br/>
 New features will be added whenever procrastination is called for :)<br/>
-Code is available <a target="_blank" href="http://bit.ly/twigigist">here</a>.<br/>
+Code is available <a target="_blank" href="http://github.com/thedod/twigi">here</a>.<br/>
 Enjoy, @<a target="_blank" href="http://twitter.com/TheRealDod">TheRealDod</a>.
 """
 
@@ -150,6 +149,7 @@ class TwiGI():
                 if self.cookie.has_key(c): self.cookie[c]['max-age']=0
             self.cookie['access_key']=self.auth.access_token.key
             self.cookie['access_secret']=self.auth.access_token.secret
+            logging.info('logged in %s',self.auth.get_username())
         else: # need to login
             for c in ['access_key','access_secret']:
                 if self.cookie.has_key(c):
@@ -273,7 +273,7 @@ class TwiGI():
                content=LOGIN_TEMPLATE % {'login_url':self.login_url})
         # create the api (auth should be fine if we got this far)
         self.username=self.auth.get_username()
-        self.api=tweepy.API(self.auth,cache=tweepy.FileCache(CACHE_DIR))
+        self.api=tweepy.API(self.auth)
         # feedback: for error messages and notifications
         self.feedback=''
         # name: for op=='user'
@@ -351,4 +351,7 @@ if __name__=='__main__':
     try:
         print TwiGI().output()
     except (tweepy.error.TweepError,TwigiError),e:
-        print make_response(title="Error", content=e)
+        logging.error(e)
+        print make_response(title="Error", content="""Error: <b>%s</b><br/>
+                [<a href="?op=home">Home</a>]
+                [<a href="?op=logout">Logout</a>] (for some errors, this is the only fix)""" % e)
